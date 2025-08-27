@@ -2,10 +2,7 @@ import socket
 import struct
 import time
 
-# ▼▼▼【変更点】▼▼▼
-# IPアドレスをPC内部を示す '127.0.0.1' に変更
 HOST = '127.0.0.1'
-# ▲▲▲【変更点】▲▲▲
 PORT = 60200
 
 def parse_command_packet(packet: bytes):
@@ -53,19 +50,28 @@ with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
                 if parsed_info:
                     op_code, data_size = parsed_info
                     
-                    if op_code == 0x3B and data_size > 0:
+                    if op_code == 0x3B and data_size > 0: # 書き込み処理
                         print(f"2. 書き込みコマンドのため、{data_size} バイトのデータパケットを受信します。")
                         
                         received_data = b''
                         while len(received_data) < data_size:
                             remaining = data_size - len(received_data)
                             chunk = conn.recv(min(remaining, 4096))
-                            if not chunk:
-                                break
+                            if not chunk: break
                             received_data += chunk
                         
                         print(f"   -> {len(received_data)} バイトのデータを受信完了。")
                         print(f"   -> 受信データ(先頭64バイト): {received_data[:64]}")
+
+                    # ▼▼▼【変更点】▼▼▼
+                    elif op_code == 0x3C: # 読み出し処理
+                        print(f"2. 読み出しコマンドのため、{data_size} バイトのダミーデータを生成して送信します。")
+                        
+                        # テスト用の簡単なデータを作成 (0x00, 0x01, 0x02, ..., 0xFF, 0x00, ...)
+                        dummy_data = bytes([i % 256 for i in range(data_size)])
+                        conn.sendall(dummy_data)
+                        print(f"   -> {len(dummy_data)} バイトのデータパケットを送信完了。")
+                    # ▲▲▲【変更点】▲▲▲
 
                     print("3. 4バイトのステータスパケット (0x00000000) をクライアントに返信します。")
                     status_packet = struct.pack('!I', 0)
