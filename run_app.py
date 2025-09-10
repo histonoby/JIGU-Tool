@@ -3,7 +3,7 @@ import os, sys
 
 
 def streamlit_run():
-    src = os.path.dirname(sys.executable) + "/app.py"
+    src = os.path.dirname(sys.executable) + "/../../app.py"
     sys.argv = ["streamlit", "run", src, "--global.developmentMode=false"]
     sys.exit(stcli.main())
 
