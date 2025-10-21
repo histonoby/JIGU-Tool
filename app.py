@@ -27,8 +27,10 @@ def main():
     if 'ls_logs' not in st.session_state: st.session_state['ls_logs'] = []
     if 'ls_server_socket' not in st.session_state: st.session_state['ls_server_socket'] = None
     if 'ls_scan_data' not in st.session_state: st.session_state['ls_scan_data'] = None
+    if 'aries_logs' not in st.session_state: st.session_state['aries_logs'] = []
 
-    tab1, tab2, tab3 = st.tabs(["手動コマンド", "初期化シーケンス", "ラインスキャン"])
+    tab1, tab2, tab3, tab4 = st.tabs(["手動コマンド", "初期化シーケンス", "ラインスキャン", "ARIESステージ制御"])
+
 
     # ==============================================================================
     # --- タブ1: 手動コマンド ---
@@ -335,6 +337,131 @@ def main():
                 st.session_state.ls_server_socket = None
                 st.session_state.ls_phase = "エラー"
                 st.rerun()
+    # ==============================================================================
+    # --- ▼▼▼【変更点】タブ4: 神津 ARIES ステージ制御 (新規追加) ▼▼▼ ---
+    # ==============================================================================
+    with tab4:
+        st.header("神津 ARIES ステージコントローラ制御")
+        st.caption("ARIESコントローラに対し、LAN経由で直接コマンドを送信します。")
+
+        # --- ARIES専用のログ関数 ---
+        def aries_log(message):
+            timestamp = datetime.now().strftime("%H:%M:%S")
+            st.session_state.aries_logs.insert(0, f"[{timestamp}] {message}")
+
+        def recv_until_cr(sock):
+            """ARIESの応答 (CRLF) を正しく受信するためのヘルパー関数"""
+            data = b""
+            while True:
+                chunk = sock.recv(1)
+                # 接続が切れたか、CR(復帰)が来たら終了
+                if not chunk or chunk == b'\r':
+                    break
+                data += chunk
+            sock.recv(1) # LF(改行)を読み飛ばす
+            return data.decode('ascii').strip()
+
+        def send_aries_command(ip, port, axis, setup_command, move_command=True):
+            """神津ARIESコントローラにコマンドを送信し、完了までポーリングする"""
+            try:
+                aries_log(f"ステージ ({ip}:{port}) へ接続します...")
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                    sock.settimeout(5) # 5秒で接続タイムアウト
+                    sock.connect((ip, port))
+                    
+                    # --- 1. セットアップコマンド (ORG, MVRなど) を送信 ---
+                    full_command = (setup_command + '\r\n').encode('ascii')
+                    sock.sendall(full_command)
+                    aries_log(f"コマンド送信: {setup_command}")
+                    response = recv_until_cr(sock)
+                    aries_log(f"応答受信: {response}")
+                    if response != "OK":
+                        aries_log(f"エラー: コマンドが受理されませんでした。({response})")
+                        return False
+
+                    if not move_command:
+                        return True # Gコマンドが不要な場合 (例: ?S)
+
+                    # --- 2. 実行(G)コマンドを送信 ---
+                    sock.sendall(b'G\r\n')
+                    aries_log(f"コマンド送信: G")
+                    response = recv_until_cr(sock)
+                    aries_log(f"応答受信: {response}")
+                    if response != "OK":
+                        aries_log(f"エラー: Gコマンドが受理されませんでした。({response})")
+                        return False
+
+                    # --- 3. 完了ポーリング ---
+                    aries_log(f"ステージの動作完了を待機中... (?S:{axis}でポーリング)")
+                    sock.settimeout(30) # ポーリングのタイムアウトは長めに
+                    
+                    start_time = time.time()
+                    while True:
+                        if time.time() - start_time > 120: # 2分で強制タイムアウト
+                            aries_log("エラー: 動作完了の確認がタイムアウトしました。")
+                            return False
+                        
+                        time.sleep(0.5) # 0.5秒ごとに確認
+                        
+                        check_command = f"?S:{axis}\r\n".encode('ascii')
+                        sock.sendall(check_command)
+                        response = recv_until_cr(sock)
+                        
+                        if response == "0":
+                            aries_log(f"応答受信: {response} (READY)")
+                            aries_log("ステージの動作が完了しました。")
+                            return True
+                        elif response == "1":
+                            pass # ビジー (1) なのでループ継続
+                        else:
+                            aries_log(f"エラー: 不明なステータス応答です。({response})")
+                            return False
+
+            except socket.timeout:
+                aries_log(f"エラー: ステージへの接続/通信がタイムアウトしました。")
+                return False
+            except ConnectionRefusedError:
+                aries_log(f"エラー: ステージへの接続が拒否されました。IP/ポートを確認してください。")
+                return False
+            except Exception as e:
+                aries_log(f"エラー: ステージとの通信中に予期せぬエラーが発生しました。 {e}")
+                return False
+
+        # --- ARIES用UI ---
+        col1, col2 = st.columns([1, 1])
+        with col1:
+            st.subheader("1. 接続先設定 (ARIES)")
+            aries_ip = st.text_input("IPアドレス", "192.168.0.100", key="aries_ip")
+            # ARIESのデフォルトポートは1000または2000が多いようです
+            aries_port = st.number_input("ポート番号", 1, 65535, 2000, key="aries_port")
+            aries_axis = st.number_input("対象軸番号", 1, 4, 1, key="aries_axis")
+            
+        with col2:
+            st.subheader("2. 操作コマンド")
+            aries_pulse = st.number_input("相対移動パルス数 (MVR)", -1000000, 1000000, 10000, key="aries_pulse")
+            
+            c2_1, c2_2 = st.columns(2)
+            with c2_1:
+                if st.button("原点復帰 (ORG)", type="primary"):
+                    st.session_state.aries_logs = []
+                    command = f"ORG:{aries_axis}"
+                    send_aries_command(aries_ip, aries_port, aries_axis, command, move_command=True)
+                    st.rerun()
+
+            with c2_2:
+                if st.button("相対移動 (MVR)"):
+                    st.session_state.aries_logs = []
+                    command = f"MVR:{aries_axis},P{aries_pulse}"
+                    send_aries_command(aries_ip, aries_port, aries_axis, command, move_command=True)
+                    st.rerun()
+
+        st.divider()
+        
+        st.subheader("ログ")
+        log_placeholder_aries = st.container(height=400, border=True)
+        for log in st.session_state.aries_logs:
+            log_placeholder_aries.text(log)
+
 
 if __name__ == "__main__":
     main()
